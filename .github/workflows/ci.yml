@@ -1,4 +1,4 @@
-name: Retail Orders CI/CD
+name: Retail Orders CI/CD Pipeline
 
 on:
   pull_request:
@@ -13,45 +13,71 @@ permissions:
   contents: read
 
 jobs:
-  # Job 1: Test the application
+
+  # ==========================================
+  # JOB 1: PYTHON TESTING AND DOCKER BUILD
+  # ==========================================
   test:
-    name: Test Application
+    name: Test and Build Application
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      - name: Checkout Source Code
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set Up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: requirements-dev.txt
 
-      - name: Install dependencies
-        run: pip install -r requirements-dev.txt
-
-      - name: Check project structure
+      - name: Install Dependencies
+        shell: bash
         run: |
-          pwd
-          ls -la
-          ls -la app
-          ls -la tests
+          set -euo pipefail
 
-      - name: Run tests
-        run: python -m pytest -q
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
 
-      - name: Validate Docker build
-        run: docker build -t retail-orders:test .
+      - name: Check Project Structure
+        shell: bash
+        run: |
+          set -euo pipefail
 
-  # Job 2: Build, push, and deploy
+          echo "Checking project files..."
+
+          test -f Dockerfile
+          test -f requirements.txt
+          test -f k8s/deployment.yaml
+
+          echo "Required project files are present."
+
+      - name: Run Python Tests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python -m pytest -q
+
+      - name: Build Docker Image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker build -t retail-orders-api:test .
+
+          echo "Docker image built successfully."
+
+  # ==========================================
+  # JOB 2: DEPLOY TO GOOGLE CLOUD
+  # ==========================================
   deploy:
-    name: Build, Push and Deploy
+    name: Deploy to Google Cloud
     runs-on: ubuntu-latest
 
     needs: test
 
+    # Deploy only after a push to feature.
+    # Pull requests run tests but do not deploy.
     if: github.event_name == 'push' && github.ref == 'refs/heads/feature'
 
     permissions:
@@ -66,46 +92,117 @@ jobs:
       IMAGE_NAME: retail-orders-api
 
     steps:
-      - name: Checkout code
+
+      # ------------------------------------------
+      # STEP 1: CHECK OUT SOURCE CODE
+      # ------------------------------------------
+      - name: Checkout Source Code
         uses: actions/checkout@v4
 
-      # Authenticate using Workload Identity Federation
+      # ------------------------------------------
+      # STEP 2: NORMALIZE CONFIGURATION VARIABLES
+      # ------------------------------------------
+      - name: Normalize Deployment Variables
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PROJECT_ID="$(printf '%s' "${PROJECT_ID}" | tr -d '\r\n' | xargs)"
+          REGION="$(printf '%s' "${REGION}" | tr -d '\r\n' | xargs)"
+          CLUSTER_NAME="$(printf '%s' "${CLUSTER_NAME}" | tr -d '\r\n' | xargs)"
+          REPOSITORY="$(printf '%s' "${REPOSITORY}" | tr -d '\r\n' | xargs)"
+
+          if [[ -z "${PROJECT_ID}" ]]; then
+            echo "ERROR: GCP_PROJECT_ID is empty."
+            exit 1
+          fi
+
+          if [[ -z "${REGION}" ]]; then
+            echo "ERROR: GCP_REGION is empty."
+            exit 1
+          fi
+
+          if [[ -z "${CLUSTER_NAME}" ]]; then
+            echo "ERROR: GKE_CLUSTER is empty."
+            exit 1
+          fi
+
+          if [[ -z "${REPOSITORY}" ]]; then
+            echo "ERROR: ARTIFACT_REGISTRY_REPOSITORY is empty."
+            exit 1
+          fi
+
+          {
+            echo "PROJECT_ID=${PROJECT_ID}"
+            echo "REGION=${REGION}"
+            echo "CLUSTER_NAME=${CLUSTER_NAME}"
+            echo "REPOSITORY=${REPOSITORY}"
+          } >> "$GITHUB_ENV"
+
+          echo "Deployment variables validated."
+          echo "Project ID: ${PROJECT_ID}"
+          echo "Region: ${REGION}"
+          echo "Repository: ${REPOSITORY}"
+          echo "GKE cluster: ${CLUSTER_NAME}"
+
+      # ------------------------------------------
+      # STEP 3: AUTHENTICATE WITH GOOGLE CLOUD
+      # ------------------------------------------
       - name: Authenticate to Google Cloud
+        id: auth
         uses: google-github-actions/auth@v2
         with:
-          project_id: ${{ vars.GCP_PROJECT_ID }}
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOYER_SERVICE_ACCOUNT }}
 
-      - name: Set up Google Cloud CLI
+      # ------------------------------------------
+      # STEP 4: INSTALL GOOGLE CLOUD SDK
+      # ------------------------------------------
+      - name: Set Up Google Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
 
-      # Verify Google Cloud authentication
-      - name: Verify Google Cloud authentication
+      # ------------------------------------------
+      # STEP 5: VERIFY GOOGLE CLOUD AUTHENTICATION
+      # ------------------------------------------
+      - name: Verify Google Cloud Authentication
         shell: bash
         run: |
           set -euo pipefail
 
           echo "Checking authenticated Google Cloud account..."
+
           gcloud auth list
 
           echo "Checking configured project..."
-          gcloud config get-value project
 
-          echo "Checking Artifact Registry variables..."
-          printf 'Project ID: %s\n' "$PROJECT_ID"
-          printf 'Region: %s\n' "$REGION"
-          printf 'Repository: %s\n' "$REPOSITORY"
+          gcloud config set project "${PROJECT_ID}" --quiet
 
-      # Configure Docker credentials for Artifact Registry
-      - name: Configure Docker authentication
+          ACTIVE_PROJECT="$(gcloud config get-value project 2>/dev/null)"
+
+          if [[ "${ACTIVE_PROJECT}" != "${PROJECT_ID}" ]]; then
+            echo "ERROR: Google Cloud project does not match."
+            exit 1
+          fi
+
+          echo "Google Cloud authentication verified."
+          echo "Project: ${ACTIVE_PROJECT}"
+
+      # ------------------------------------------
+      # STEP 6: CONFIGURE DOCKER AUTHENTICATION
+      # ------------------------------------------
+      - name: Configure Docker Authentication
         shell: bash
         run: |
           set -euo pipefail
 
+          # Remove accidental spaces and line breaks.
+          REGION="$(printf '%s' "${REGION}" | tr -d '\r\n' | xargs)"
+          export REGION
+
           REGISTRY="${REGION}-docker.pkg.dev"
 
-          echo "Configuring Docker authentication for ${REGISTRY}..."
+          echo "Configuring Docker authentication..."
+          echo "Registry: ${REGISTRY}"
 
           gcloud auth configure-docker "${REGISTRY}" --quiet
 
@@ -114,39 +211,72 @@ jobs:
           python -c '
           import json
           import os
+          from pathlib import Path
 
-          path = os.path.expanduser("~/.docker/config.json")
+          region = os.environ["REGION"].strip()
+          registry = f"{region}-docker.pkg.dev"
 
-          with open(path, encoding="utf-8") as f:
-              config = json.load(f)
+          config_path = Path.home() / ".docker" / "config.json"
 
-          registry = os.environ["REGION"] + "-docker.pkg.dev"
-          helper = config.get("credHelpers", {}).get(registry)
-
-          if helper != "gcloud":
+          if not config_path.exists():
               raise SystemExit(
-                  f"Expected gcloud credential helper for {registry}; "
-                  f"found {helper!r}"
+                  f"Docker configuration file not found: {config_path}"
               )
 
-          print(f"Credential helper configured for {registry}")
+          with config_path.open(encoding="utf-8") as file:
+              config = json.load(file)
+
+          helpers = config.get("credHelpers", {})
+          actual = helpers.get(registry)
+
+          print(f"Expected registry: {registry}")
+          print(f"Configured helper: {actual}")
+
+          if actual != "gcloud":
+              raise SystemExit(
+                  f"Expected gcloud credential helper for {registry}; "
+                  f"found {actual}"
+              )
+
+          print("Docker credential helper configured successfully.")
           '
 
-      # Build and push Docker image
-      - name: Build and push image
+      # ------------------------------------------
+      # STEP 7: VERIFY ARTIFACT REGISTRY ACCESS
+      # ------------------------------------------
+      - name: Verify Artifact Registry Access
         shell: bash
-        env:
-          COMMIT_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
 
-          PROJECT_ID="$(printf '%s' "$PROJECT_ID" | tr -d '\r\n' | xargs)"
-          REGION="$(printf '%s' "$REGION" | tr -d '\r\n' | xargs)"
-          REPOSITORY="$(printf '%s' "$REPOSITORY" | tr -d '\r\n' | xargs)"
+          echo "Checking Google Cloud access token..."
 
-          IMAGE_URI="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${IMAGE_NAME}:${COMMIT_SHA}"
+          gcloud auth print-access-token > /dev/null
 
-          echo "Building image: ${IMAGE_URI}"
+          echo "Checking Artifact Registry repository..."
+
+          gcloud artifacts repositories describe "${REPOSITORY}" \
+            --location="${REGION}" \
+            --project="${PROJECT_ID}"
+
+          echo "Artifact Registry repository is accessible."
+
+      # ------------------------------------------
+      # STEP 8: BUILD AND PUSH DOCKER IMAGE
+      # ------------------------------------------
+      - name: Build and Push Docker Image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          COMMIT_SHA="${GITHUB_SHA}"
+
+          REGISTRY="${REGION}-docker.pkg.dev"
+
+          IMAGE_URI="${REGISTRY}/${PROJECT_ID}/${REPOSITORY}/${IMAGE_NAME}:${COMMIT_SHA}"
+
+          echo "Building Docker image..."
+          echo "Image: ${IMAGE_URI}"
 
           docker build -t "${IMAGE_URI}" .
 
@@ -156,38 +286,87 @@ jobs:
 
           echo "IMAGE_URI=${IMAGE_URI}" >> "$GITHUB_ENV"
 
-          echo "Image pushed successfully."
+          echo "Docker image pushed successfully."
 
-      # Connect to GKE
-      - name: Connect to GKE
+      # ------------------------------------------
+      # STEP 9: CONNECT TO GKE CLUSTER
+      # ------------------------------------------
+      - name: Connect to GKE Cluster
         shell: bash
         run: |
           set -euo pipefail
+
+          echo "Connecting to GKE cluster: ${CLUSTER_NAME}"
 
           gcloud container clusters get-credentials "${CLUSTER_NAME}" \
             --region="${REGION}" \
             --project="${PROJECT_ID}"
 
-      # Deploy application
-      - name: Deploy application
+          echo "Checking Kubernetes cluster connection..."
+
+          kubectl cluster-info
+
+          kubectl get nodes
+
+      # ------------------------------------------
+      # STEP 10: UPDATE KUBERNETES DEPLOYMENT
+      # ------------------------------------------
+      - name: Deploy Application to GKE
         shell: bash
         run: |
           set -euo pipefail
+
+          echo "Preparing Kubernetes deployment manifest..."
+
+          test -f k8s/deployment.yaml
+
+          if ! grep -q 'IMAGE_PLACEHOLDER' k8s/deployment.yaml; then
+            echo "ERROR: IMAGE_PLACEHOLDER was not found in k8s/deployment.yaml."
+            echo "Update the image field in your manifest."
+            exit 1
+          fi
 
           sed "s|IMAGE_PLACEHOLDER|${IMAGE_URI}|g" \
-            k8s/deployment.yaml > /tmp/deployment.yaml
+            k8s/deployment.yaml > deployment-rendered.yaml
 
-          kubectl apply -f /tmp/deployment.yaml
+          echo "Applying Kubernetes manifests..."
 
-          kubectl rollout status deployment/retail-orders \
-            --timeout=180s
+          kubectl apply -f deployment-rendered.yaml
 
-      # Verify deployment
-      - name: Verify deployment
+          echo "Kubernetes deployment manifest applied."
+
+      # ------------------------------------------
+      # STEP 11: WAIT FOR ROLLOUT
+      # ------------------------------------------
+      - name: Verify Deployment Rollout
         shell: bash
         run: |
           set -euo pipefail
 
-          kubectl get deployment retail-orders
-          kubectl get pods -l app=retail-orders -o wide
+          echo "Waiting for application deployment..."
+
+          kubectl rollout status deployment/retail-orders \
+            --timeout=300s
+
+          echo "Deployment rollout completed."
+
+      # ------------------------------------------
+      # STEP 12: VERIFY DEPLOYMENT RESOURCES
+      # ------------------------------------------
+      - name: Verify Application
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Checking deployments..."
+          kubectl get deployments
+
+          echo "Checking pods..."
+          kubectl get pods -o wide
+
+          echo "Checking services..."
           kubectl get services
+
+          echo "===================================="
+          echo "CI/CD pipeline completed successfully."
+          echo "===================================="
