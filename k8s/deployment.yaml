@@ -3,7 +3,7 @@ kind: Deployment
 metadata:
   name: retail-orders
 spec:
-  replicas: 1 # SQLite demo only. Use PostgreSQL for multi-replica deployments.
+  replicas: 1
   selector:
     matchLabels:
       app: retail-orders
@@ -14,12 +14,12 @@ spec:
     spec:
       containers:
         - name: api
-          image: IMAGE_PLACEHOLDER
+          image: asia-south1-docker.pkg.dev/project-62792d44-c5f4-49d8-9da/retail-orders/retail-orders-api:v1
           ports:
             - containerPort: 8000
           env:
             - name: DATABASE_URL
-              value: "sqlite:////tmp/orders.db" # ephemeral demonstration storage
+              value: "sqlite:////tmp/orders.db"
           resources:
             requests:
               cpu: 100m

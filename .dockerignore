@@ -4,3 +4,14 @@ __pycache__/
 .git/
 *.db
 .env
+.git
+.github
+terraform
+k8s
+.terraform
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+__pycache__
+*.pyc
+.env

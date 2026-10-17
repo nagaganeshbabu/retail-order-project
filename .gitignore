@@ -4,3 +4,22 @@ __pycache__/
 .env
 *.db
 *.pyc
+# Terraform downloaded providers and working files
+**/.terraform/*
+
+# Terraform state
+*.tfstate
+*.tfstate.*
+
+# Local Terraform variables
+*.tfvars
+*.tfvars.json
+
+# Python virtual environments
+.venv/
+.venv-*/
+
+# Environment files
+.env
+.env.*
+!.env.example
