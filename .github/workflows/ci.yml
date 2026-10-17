@@ -12,8 +12,12 @@ on:
 permissions:
   contents: read
 
+  
+
 jobs:
   test:
+
+
     name: Test Application
     runs-on: ubuntu-latest
 
@@ -31,8 +35,16 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
 
+      - name: Check project structure
+        run: |
+          pwd
+          ls -la
+          ls -la app
+          ls -la tests
+          python -c "import sys; print(sys.path)"
+
       - name: Run tests
-        run: pytest -q
+        run: python -m pytest -q
 
       - name: Validate Docker build
         run: docker build -t retail-orders:test .
@@ -43,7 +55,8 @@ jobs:
 
     needs: test
 
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    if: github.event_name == 'push' && github.ref == 'refs/heads/feature'
 
     permissions:
       contents: read
