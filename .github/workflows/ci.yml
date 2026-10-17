@@ -13,6 +13,7 @@ permissions:
   contents: read
 
 jobs:
+  # Job 1: Test the application
   test:
     name: Test Application
     runs-on: ubuntu-latest
@@ -37,7 +38,6 @@ jobs:
           ls -la
           ls -la app
           ls -la tests
-          python -c "import sys; print(sys.path)"
 
       - name: Run tests
         run: python -m pytest -q
@@ -45,6 +45,7 @@ jobs:
       - name: Validate Docker build
         run: docker build -t retail-orders:test .
 
+  # Job 2: Build, push, and deploy
   deploy:
     name: Build, Push and Deploy
     runs-on: ubuntu-latest
@@ -68,7 +69,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Authenticate to Google Cloud using Workload Identity Federation
+      # Authenticate using Workload Identity Federation
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
@@ -79,27 +80,59 @@ jobs:
       - name: Set up Google Cloud CLI
         uses: google-github-actions/setup-gcloud@v2
 
-      # Verify the authenticated account and project
+      # Verify Google Cloud authentication
       - name: Verify Google Cloud authentication
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Authenticated Google Cloud account:"
+          echo "Checking authenticated Google Cloud account..."
           gcloud auth list
 
-          echo "Configured Google Cloud project:"
+          echo "Checking configured project..."
           gcloud config get-value project
 
-      # Configure Docker to use Google Cloud credentials
+          echo "Checking Artifact Registry variables..."
+          printf 'Project ID: %s\n' "$PROJECT_ID"
+          printf 'Region: %s\n' "$REGION"
+          printf 'Repository: %s\n' "$REPOSITORY"
+
+      # Configure Docker credentials for Artifact Registry
       - name: Configure Docker authentication
         shell: bash
         run: |
           set -euo pipefail
 
-          gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+          REGISTRY="${REGION}-docker.pkg.dev"
 
-      # Build and push the application image
+          echo "Configuring Docker authentication for ${REGISTRY}..."
+
+          gcloud auth configure-docker "${REGISTRY}" --quiet
+
+          echo "Checking Docker credential helper configuration..."
+
+          python -c '
+          import json
+          import os
+
+          path = os.path.expanduser("~/.docker/config.json")
+
+          with open(path, encoding="utf-8") as f:
+              config = json.load(f)
+
+          registry = os.environ["REGION"] + "-docker.pkg.dev"
+          helper = config.get("credHelpers", {}).get(registry)
+
+          if helper != "gcloud":
+              raise SystemExit(
+                  f"Expected gcloud credential helper for {registry}; "
+                  f"found {helper!r}"
+              )
+
+          print(f"Credential helper configured for {registry}")
+          '
+
+      # Build and push Docker image
       - name: Build and push image
         shell: bash
         env:
@@ -118,11 +151,14 @@ jobs:
           docker build -t "${IMAGE_URI}" .
 
           echo "Pushing image to Artifact Registry..."
+
           docker push "${IMAGE_URI}"
 
           echo "IMAGE_URI=${IMAGE_URI}" >> "$GITHUB_ENV"
 
-      # Connect to the existing GKE cluster
+          echo "Image pushed successfully."
+
+      # Connect to GKE
       - name: Connect to GKE
         shell: bash
         run: |
@@ -132,7 +168,7 @@ jobs:
             --region="${REGION}" \
             --project="${PROJECT_ID}"
 
-      # Deploy the application to Kubernetes
+      # Deploy application
       - name: Deploy application
         shell: bash
         run: |
@@ -146,7 +182,7 @@ jobs:
           kubectl rollout status deployment/retail-orders \
             --timeout=180s
 
-      # Verify deployment status
+      # Verify deployment
       - name: Verify deployment
         shell: bash
         run: |
