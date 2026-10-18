@@ -14,7 +14,7 @@ spec:
     spec:
       containers:
         - name: api
-          image: asia-south1-docker.pkg.dev/project-62792d44-c5f4-49d8-9da/retail-orders/retail-orders-api:v1
+          image: IMAGE_PLACEHOLDER
           ports:
             - containerPort: 8000
           env:
