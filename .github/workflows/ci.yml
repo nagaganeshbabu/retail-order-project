@@ -291,10 +291,13 @@ jobs:
       # ------------------------------------------
       # STEP 9: CONNECT TO GKE CLUSTER
       # ------------------------------------------
+        
       - name: Connect to GKE Cluster
         shell: bash
         run: |
           set -euo pipefail
+
+          export USE_GKE_GCLOUD_AUTH_PLUGIN=True
 
           echo "Connecting to GKE cluster: ${CLUSTER_NAME}"
 
@@ -307,7 +310,6 @@ jobs:
           kubectl cluster-info
 
           kubectl get nodes
-
       # ------------------------------------------
       # STEP 10: UPDATE KUBERNETES DEPLOYMENT
       # ------------------------------------------
